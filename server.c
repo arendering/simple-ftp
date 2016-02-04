@@ -6,10 +6,20 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #define BUF_LEN 1024
 #define PORT "8888"
 #define SERV "localhost"
+
+
+void sigchld_handler(int s)
+{
+    while(waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+}
+
 
 int main(int argc, char ** argv)
 {
@@ -58,39 +68,56 @@ int main(int argc, char ** argv)
     char buffer[BUF_LEN];
     struct sockaddr_in client_addr;
     socklen_t sin_size = sizeof(client_addr);
-    int slave_socket = accept(master_socket, 
-                              (struct sockaddr *) &client_addr,
-                              &sin_size);
-    if(slave_socket == -1) {
-        perror("accept() error");
-        close(master_socket);
+    int slave_socket = 0;
+
+    struct sigaction sigact;
+    sigact.sa_handler = sigchld_handler;
+    sigemptyset(&sigact.sa_mask);
+    sigact.sa_flags = SA_RESTART;
+    if(sigaction(SIGCHLD, &sigact, NULL) == -1) {
+        perror("sigaction() error");
         return 1;
-    } 
-    char s[INET_ADDRSTRLEN];
-    inet_ntop(client_addr.sin_family,
-              &client_addr.sin_addr,
-              s, sizeof(s));
-    printf("Got connection from: %s\n", s);
+    }
+
+    printf("Server waits for connections..\n");
 
     while(1) {
-        
-        int res = recv(slave_socket, buffer, BUF_LEN, 0);
-        if(res == -1) {
-            perror("recv() error");
-            close(slave_socket);
+
+        slave_socket = accept(master_socket, 
+                              (struct sockaddr *) &client_addr,
+                              &sin_size);
+        if(slave_socket == -1) {
+            perror("accept() error");
+            close(master_socket);
             return 1;
-        } else if(res == 0) {
-            printf("Connection closed by client..\n");
-            break;
-        } else {
-            buffer[res] = '\0';
-            printf("getting: %s", buffer);
+        } 
+        char s[INET_ADDRSTRLEN];
+        inet_ntop(client_addr.sin_family,
+                  &client_addr.sin_addr,
+                  s, sizeof(s));
+        printf("Got connection from: %s\n", s);
+        
+        if(fork()) { /* parent process */
+            continue;
+        } else { /* child process */
+            while(1) {
+                int res = recv(slave_socket, buffer, BUF_LEN, 0);
+                if(res == -1) {
+                    perror("recv() error");
+                    close(slave_socket);
+                    return 1;
+                } else if(res == 0) {
+                    printf("Connection closed by client %s..\n", s);
+                    break;
+                } else {
+                    buffer[res] = '\0';
+                    printf("getting: %s", buffer);
+                }
+            }
+            close(slave_socket);
         }
     }
 
-    if(shutdown(slave_socket, SHUT_RDWR) == -1)
-        perror("shutdown() error");
-    close(slave_socket);
     return 0;
 }
 
