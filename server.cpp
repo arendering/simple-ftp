@@ -1,4 +1,8 @@
 #include <iostream>
+#include <string>
+#include <regex>
+#include <sstream>
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -8,8 +12,6 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <signal.h>
-#include <string>
-#include <regex>
 #include <dirent.h>
 
 #define BUF_LEN 1024
@@ -36,10 +38,9 @@ int what_to_do(const char *buffer)
         return 4; 
 }
 
-void send_listing(int fd)
+std::vector<std::string> get_files_in_directory()
 {
-    std::string response("");
-    std::string list("");
+    std::vector<std::string> files;
     DIR *d;
     struct dirent *dir;
     d = opendir(".");
@@ -48,35 +49,62 @@ void send_listing(int fd)
             if(dir->d_type == DT_REG) { // checking that it's a regular file
                                         // not a directory or smth else
                 std::string buf(dir->d_name);
-                list += buf + ", "; 
-
+                files.push_back(buf);
             }
         }    
-    } else {
-        response = "Unable to open directory..\n";
-    }
+    } else 
+       std::cerr << "opendir() error" << std::endl; 
+    return files;
+}
 
-    if(response.empty()) {
-        std::string buf = "Directory listing: ";
-        response = buf + list;
+void send_listing(int fd)
+{
+    std::vector<std::string> files = get_files_in_directory();
+    std::string response("");
+    if(!files.empty()) {
+        response = "Directory listing: ";
+        for(auto &file : files) {
+            response += file + ", ";
+        }
         size_t i = response.size();
         size_t n = 2;
         response.erase(i-n, n);
         response.push_back('\n');
-    }
+    } else
+        response = "There is no files..\n";
 
     send(fd, response.c_str(), response.size() + 1, MSG_NOSIGNAL);
 }
 
 std::string cut_filename(char *buffer)
 {
-    std::string s = "hello";
-    return s;
+    std::vector<std::string> files;
+    std::istringstream iss(buffer); // create a stream from string
+    char split_ch = ' ';
+    std::string tmp;
+    while(std::getline(iss, tmp, split_ch)) {
+        files.push_back(tmp);
+    }
+    return files[1];
 }
 
 void send_file(std::string &filename, int fd)
 {
-
+    filename.erase(filename.size() - 1, 1); // erase \n in the end of filename
+    std::vector<std::string> files = get_files_in_directory();
+    bool file_exists = false;
+    for(auto &file : files) {
+        if(file == filename) {
+            file_exists = true;
+            break;
+        }
+    }
+    if(file_exists) {
+        //send file
+    } else {
+        std::string message = "File \"" + filename + "\" isn't exist\n";
+        send(fd, message.c_str(), message.size() + 1, MSG_NOSIGNAL);
+    }
 }
 
 int main(int argc, char ** argv)
