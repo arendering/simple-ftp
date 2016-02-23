@@ -8,6 +8,9 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <string>
+#include <regex>
+#include <dirent.h>
 
 #define BUF_LEN 1024
 #define PORT "8080"
@@ -19,6 +22,62 @@ void sigchld_handler(int s)
         ;
 }
 
+int what_to_do(const char *buffer)
+{
+    std::regex re("^download\\ \\w+");
+    std::string str(buffer);
+    if(str == "exit\n")
+        return 1;
+    else if(str == "list\n")
+        return 2;
+    else if(std::regex_search(str, re))
+        return 3;
+    else 
+        return 4; 
+}
+
+void send_listing(int fd)
+{
+    std::string response("");
+    std::string list("");
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(".");
+    if(d) {
+        while( (dir = readdir(d)) != NULL) {
+            if(dir->d_type == DT_REG) { // checking that it's a regular file
+                                        // not a directory or smth else
+                std::string buf(dir->d_name);
+                list += buf + ", "; 
+
+            }
+        }    
+    } else {
+        response = "Unable to open directory..\n";
+    }
+
+    if(response.empty()) {
+        std::string buf = "Directory listing: ";
+        response = buf + list;
+        size_t i = response.size();
+        size_t n = 2;
+        response.erase(i-n, n);
+        response.push_back('\n');
+    }
+
+    send(fd, response.c_str(), response.size() + 1, MSG_NOSIGNAL);
+}
+
+std::string cut_filename(char *buffer)
+{
+    std::string s = "hello";
+    return s;
+}
+
+void send_file(std::string &filename, int fd)
+{
+
+}
 
 int main(int argc, char ** argv)
 {
@@ -76,7 +135,6 @@ int main(int argc, char ** argv)
 
     std::cout << "Server waits for connections..\n";
     int slave_socket = 0;
-    char buffer[BUF_LEN];
     struct sockaddr_in client_addr;
     socklen_t sin_size = sizeof(client_addr);
 
@@ -95,24 +153,54 @@ int main(int argc, char ** argv)
                   &client_addr.sin_addr,
                   s, sizeof(s));
         std::cout << "Got connection from: " << s << std::endl;
-        
+        bool flag = true;
+
         if(fork()) { /* parent process */
             continue;
         } else { /* child process */
             while(true) {
+                if(flag) {
+                    std::string how_to_use = 
+                        "Available commands: list, download <filename>\n";
+                    send(slave_socket, how_to_use.c_str(), 
+                            how_to_use.size() + 1, MSG_NOSIGNAL);
+                    flag = false;
+                }
+                char buffer[BUF_LEN];
                 int res = recv(slave_socket, buffer, BUF_LEN, 0);
                 if(res == -1) {
                     std::cerr << "recv() error" << std::endl;
                     close(slave_socket);
                     return 1;
                 } else if(res == 0) {
-                    std::cout << "Connection closed by client " << s << std::endl;
                     break;
                 } else {
                     buffer[res] = '\0';
-                    std::cout << "getting: " <<  buffer << std::endl;
+                    int val = what_to_do(buffer);
+                    switch (val) {
+                        case 1:
+                            goto end_loop;
+
+                        case 2:
+                            send_listing(slave_socket);
+                            break;
+                            
+                        case 3: {
+                            std::string filename = cut_filename(buffer);
+                            send_file(filename, slave_socket);
+                        } break;
+
+                        case 4: {
+                            std::string response = "Unknown command..\n";
+                            send(slave_socket, response.c_str(),
+                                   response.size() + 1, MSG_NOSIGNAL);
+                        } break; 
+                    }
                 }
             }
+            end_loop: ;
+            std::cout << "Connection closed by client " << s << std::endl;
+            shutdown(slave_socket, SHUT_RDWR);
             close(slave_socket);
         }
     }
