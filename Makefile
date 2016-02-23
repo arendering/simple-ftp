@@ -1,3 +1,3 @@
 all:
-	gcc server.c -o server 
+	g++ server.cpp -o server 
 
