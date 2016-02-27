@@ -28,9 +28,9 @@ int what_to_do(const char *buffer)
 {
     std::regex re("^download\\ \\w+");
     std::string str(buffer);
-    if(str == "exit\n")
+    if(str == "exit")
         return 1;
-    else if(str == "list\n")
+    else if(str == "list")
         return 2;
     else if(std::regex_search(str, re))
         return 3;
@@ -90,7 +90,7 @@ std::string cut_filename(char *buffer)
 
 void send_file(std::string &filename, int fd)
 {
-    filename.erase(filename.size() - 1, 1); // erase \n in the end of filename
+    // filename.erase(filename.size() - 1, 1); // erase \n in the end of filename
     std::vector<std::string> files = get_files_in_directory();
     bool file_exists = false;
     for(auto &file : files) {
@@ -101,6 +101,8 @@ void send_file(std::string &filename, int fd)
     }
     if(file_exists) {
         //send file
+        char resp[] = "Not yet!\n";
+        send(fd, resp, 10, MSG_NOSIGNAL);
     } else {
         std::string message = "File \"" + filename + "\" isn't exist\n";
         send(fd, message.c_str(), message.size() + 1, MSG_NOSIGNAL);
@@ -203,7 +205,7 @@ int main(int argc, char ** argv)
                 } else if(res == 0) {
                     break;
                 } else {
-                    buffer[res] = '\0';
+                    //buffer[res] = '\0';
                     int val = what_to_do(buffer);
                     switch (val) {
                         case 1:
