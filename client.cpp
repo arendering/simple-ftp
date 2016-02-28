@@ -13,27 +13,77 @@
 #include <unistd.h>
 
 #define PORT "8080"
+#define FILE_TRANSFER_PORT "8081"
 #define BUF_SIZE 1024
 
-void receive_file(int socket_fd, int file_fd)
-{
-    char buffer[BUF_SIZE];
-    char end_msg[] = "File transfer ends";
-    while(true) {
-        //int bytes_read = read(socket_fd, buffer, sizeof(buffer));
-        memset(buffer, 0, BUF_SIZE);
-        int bytes_read = recv(socket_fd, buffer, BUF_SIZE, 0);
-        if(!strncmp(end_msg, buffer, bytes_read)) {
-            std::cout << "..file transfer ends.." << std::endl;
-            break;
-        }
-        else 
-            write(file_fd, buffer, bytes_read);
+int get_new_connection(const char *nodename, const char *port) {
+    struct addrinfo hints, *servinfo;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if(getaddrinfo(nodename, port, &hints, &servinfo) != 0) {
+        std::cerr << "getaddrinfo() error" << std::endl;
+        return -1;
+    }
+    int master_socket = socket(servinfo->ai_family, 
+                               servinfo->ai_socktype,
+                               servinfo->ai_protocol);
+    if(master_socket == -1) {
+        std::cerr << "socket() error" << std::endl;
+        return -1;
     }
     
+    sleep(5); //because connect() on client earlier than accept() on server
+
+    if(connect(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+        close(master_socket);
+        std::cerr << "connect() error" << std::endl;
+        return -1;
+    }
+
+    freeaddrinfo(servinfo);
+    return master_socket;
 }
 
-void try_receive_file(int socket_fd, std::string &filename)
+void receive_file(const char *nodename, int cmd_socket_fd, int file_fd)
+{
+    int file_socket_fd = get_new_connection(nodename, FILE_TRANSFER_PORT);
+    if(file_socket_fd == -1) {
+        char bad_answer[] = "bad";
+        send(cmd_socket_fd, bad_answer, strlen(bad_answer), MSG_NOSIGNAL);
+        return;
+    }
+
+
+    char buffer[BUF_SIZE];
+    memset(buffer, 0, BUF_SIZE);
+    int bytes_read = recv(cmd_socket_fd, buffer, BUF_SIZE, 0);
+    char good_answer[] = "Server create new connection";
+    
+    if(!strncmp(good_answer, buffer, bytes_read)) {
+        char msg[] = "Client listen new connection";
+        send(cmd_socket_fd, msg, strlen(msg) + 1, MSG_NOSIGNAL);
+        std::cout << "..file transfer starts.." << std::endl;
+
+        //file transfer
+        char buffer[BUF_SIZE];
+        while(true) {
+            memset(buffer, 0, BUF_SIZE);
+            int bytes_read = recv(file_socket_fd, buffer, BUF_SIZE, 0);
+            if(bytes_read == 0) {
+                std::cout << "..file transfer ends.." << std::endl;
+                close(file_socket_fd);
+                break;
+            } else 
+                write(file_fd, buffer, bytes_read);
+        }
+    } else {
+        std::cout << "Server error: " << buffer << std::endl;
+        return;
+    }
+}
+
+void try_receive_file(const char *nodename, int socket_fd, std::string &filename)
 {
     int file_fd = 0;
     std::string msg("");
@@ -45,8 +95,7 @@ void try_receive_file(int socket_fd, std::string &filename)
     }
     msg = "Ready to get file";
     send(socket_fd, msg.c_str(), msg.size(), MSG_NOSIGNAL);
-    std::cout << "..file transfer starts.." << std::endl;
-    receive_file(socket_fd, file_fd);
+    receive_file(nodename, socket_fd, file_fd);
     close(file_fd);
 }
 
@@ -63,6 +112,7 @@ std::string return_filename(char * buffer)
 
 }
 
+
 int main(int argc, char ** argv)
 {
     if( argc != 2) {
@@ -70,29 +120,10 @@ int main(int argc, char ** argv)
                   << std::endl;
         return 1;
     }
-    struct addrinfo hints, *servinfo;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if(getaddrinfo(argv[1], PORT, &hints, &servinfo) != 0) {
-        std::cerr << "getaddrinfo() error" << std::endl;
-        return 1;
-    }
-    int master_socket = socket(servinfo->ai_family, 
-                               servinfo->ai_socktype,
-                               servinfo->ai_protocol);
-    if(master_socket == -1) {
-        std::cerr << "socket() error" << std::endl;
-        return 1;
-    }
-    
-    if(connect(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
-        close(master_socket);
-        std::cerr << "connect() error" << std::endl;
-        return 1;
-    }
 
-    freeaddrinfo(servinfo);
+    int master_socket = get_new_connection(argv[1], PORT);
+    if(master_socket == -1)
+        return -1;
     char buffer[BUF_SIZE];
     int res = recv(master_socket, buffer, BUF_SIZE - 1, 0);
     if(res == -1) {
@@ -119,7 +150,7 @@ int main(int argc, char ** argv)
             std::string new_buffer(buffer);
             if( std::regex_search(new_buffer, re) )  {
                 std::string filename = return_filename(buffer);
-                try_receive_file(master_socket, filename);
+                try_receive_file(argv[1], master_socket, filename);
             } else {
                 std::cout << buffer;
             }

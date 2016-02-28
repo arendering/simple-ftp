@@ -20,7 +20,54 @@
 
 #define BUF_LEN 1024
 #define PORT "8080"
+#define FILE_TRANSFER_PORT "8081"
 
+int get_new_connection(const char * port)
+{
+    struct addrinfo hints;
+    struct addrinfo *servinfo;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET; /* IPv4 family */
+    hints.ai_socktype = SOCK_STREAM; /* stream socket TCP */
+    hints.ai_flags = AI_PASSIVE; /* for server: receiving client with any addr */
+
+    if(getaddrinfo(NULL, port, &hints, &servinfo) != 0) {
+        std::cerr << "getaddrinfo() error" << std::endl;
+        return -1;
+    }
+
+    int master_socket = socket(servinfo->ai_family,
+                               servinfo->ai_socktype,
+                               servinfo->ai_protocol);
+    if(master_socket == -1) {
+        std::cerr << "socket() error" << std::endl;
+        return -1;
+    }
+
+    if(bind(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+        std::cerr << "bind() error" << std::endl;
+        close(master_socket);
+        return -1;
+    }
+
+    freeaddrinfo(servinfo); /* ends with addrinfo */
+
+    /* reuse port */
+    int optval = 1;
+    if(setsockopt(master_socket, SOL_SOCKET, 
+                  SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
+        std::cerr << "setsockopt() error" << std::endl;
+        return -1;
+    }
+
+    if(listen(master_socket, SOMAXCONN) == -1) {
+        std::cerr << "listen() error" << std::endl;
+        close(master_socket);
+        return -1;
+    }
+
+    return master_socket;
+}
 
 void sigchld_handler(int s)
 {
@@ -103,33 +150,47 @@ bool is_file_exist(std::string &filename)
 }
 
 
-void send_file(int socket_fd, int file_fd)
+void send_file(int cmd_socket_fd, int file_fd)
 {
-    /*
-    char buffer[BUF_LEN];
-    while(true) {
-        memset(buffer, 0, BUF_LEN);
-        int bytes_read = read(file_fd, buffer, BUF_LEN - 1);
-        if(bytes_read == 0) {
-            std::string msg("File transfer ends");
-            send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
-            std::cout << "file ends was received" << std::endl;
-            break;
-        } else if(bytes_read < 0) {
-            std::cerr << "read() error" << std::endl;
-            break;
-        } else { 
-            buffer[bytes_read] = '\0';
-            send(socket_fd, buffer, bytes_read, MSG_NOSIGNAL);
+    std::string msg("");
+    int master_socket = get_new_connection(FILE_TRANSFER_PORT);
+    int file_socket_fd = 0;
+    if(master_socket == -1) {
+        msg = "Unable to create connection to receive file, socket() error..\n";
+        send(cmd_socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+        return;
+    } else {
+        struct sockaddr_in client_addr;
+        socklen_t sin_size = sizeof(client_addr);
+        file_socket_fd = accept(master_socket, 
+                              (struct sockaddr *) &client_addr,
+                              &sin_size);
+        if(file_socket_fd == -1) {
+            std::cerr << "accept() error" << std::endl;
+            close(master_socket);
+            msg = "Unable to create connection to receive file, accept() error\n";
+            send(cmd_socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+            return;
+        } else {
+            msg = "Server create new connection";
+            send(cmd_socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+
+            char buffer[BUF_LEN];
+            memset(buffer, 0, BUF_LEN);
+            int bytes_read = recv(cmd_socket_fd, buffer, BUF_LEN, 0);
+            char good_answer[] = "Client listen new connection";
+            if(!strncmp(buffer, good_answer, bytes_read)) {
+                struct stat stat_buf;
+                fstat(file_fd, &stat_buf);
+                off_t offset = 0;
+                sendfile(file_socket_fd, file_fd, &offset, stat_buf.st_size);
+            }
+            shutdown(file_socket_fd, SHUT_RDWR);
+            close(file_socket_fd);
+            close(master_socket);
+
         }
     }
-    */
-    struct stat stat_buf;
-    fstat(file_fd, &stat_buf);
-    off_t offset = 0;
-    sendfile(socket_fd, file_fd, &offset, stat_buf.st_size);
-    std::string msg("File transfer ends");
-    send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
 }
 
 
@@ -152,6 +213,7 @@ void try_send_file(std::string &filename, int socket_fd)
     msg = "Starting file transfer " + filename;
     send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
     char buffer[BUF_LEN];
+    memset(buffer, 0, BUF_LEN);
     int read_bytes = recv(socket_fd, buffer, BUF_LEN - 1, 0);
     if( !strncmp(buffer, "Ready to get file", read_bytes)) {
         send_file(socket_fd, file_fd); 
@@ -159,51 +221,11 @@ void try_send_file(std::string &filename, int socket_fd)
     close(file_fd);
 }
 
+
 int main(int argc, char ** argv)
 {
-    struct addrinfo hints;
-    struct addrinfo *servinfo;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET; /* IPv4 family */
-    hints.ai_socktype = SOCK_STREAM; /* stream socket TCP */
-    hints.ai_flags = AI_PASSIVE; /* for server: receiving client with any addr */
+    int master_socket = get_new_connection(PORT); 
 
-    if(getaddrinfo(NULL, PORT, &hints, &servinfo) != 0) {
-        std::cerr << "getaddrinfo() error" << std::endl;
-        return 1;
-    }
-
-    int master_socket = socket(servinfo->ai_family,
-                               servinfo->ai_socktype,
-                               servinfo->ai_protocol);
-    if(master_socket == -1) {
-        std::cerr << "socket() error" << std::endl;
-        return 1;
-    }
-
-    if(bind(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
-        std::cerr << "bind() error" << std::endl;
-        close(master_socket);
-        return 1;
-    }
-
-    freeaddrinfo(servinfo); /* ends with addrinfo */
-
-    /* reuse port */
-    int optval = 1;
-    if(setsockopt(master_socket, SOL_SOCKET, 
-                  SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
-        std::cerr << "setsockopt() error" << std::endl;
-        return 1;
-    }
-
-    if(listen(master_socket, SOMAXCONN) == -1) {
-        std::cerr << "listen() error" << std::endl;
-        close(master_socket);
-        return 1;
-    }
-
-    
     struct sigaction sigact;
     sigact.sa_handler = sigchld_handler;
     sigemptyset(&sigact.sa_mask);
@@ -235,9 +257,9 @@ int main(int argc, char ** argv)
         std::cout << "Got connection from: " << s << std::endl;
         bool flag = true;
 
-        if(fork()) { /* parent process */
+       if(fork()) { // parent process
             continue;
-        } else { /* child process */
+        } else { // child process 
             while(true) {
                 if(flag) {
                     std::string how_to_use = 
