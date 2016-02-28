@@ -2,12 +2,16 @@
 #include <string>
 #include <regex>
 #include <sstream>
+#include <fstream>
 
 #include <sys/socket.h>
+#include <sys/sendfile.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -45,7 +49,7 @@ std::vector<std::string> get_files_in_directory()
     struct dirent *dir;
     d = opendir(".");
     if(d) {
-        while( (dir = readdir(d)) != NULL) {
+        while( (dir = readdir(d)) != NULL ) {
             if(dir->d_type == DT_REG) { // checking that it's a regular file
                                         // not a directory or smth else
                 std::string buf(dir->d_name);
@@ -88,25 +92,71 @@ std::string cut_filename(char *buffer)
     return files[1];
 }
 
-void send_file(std::string &filename, int fd)
+bool is_file_exist(std::string &filename)
 {
-    // filename.erase(filename.size() - 1, 1); // erase \n in the end of filename
     std::vector<std::string> files = get_files_in_directory();
-    bool file_exists = false;
     for(auto &file : files) {
-        if(file == filename) {
-            file_exists = true;
+        if(file == filename) 
+            return true;
+    }
+    return false;
+}
+
+
+void send_file(int socket_fd, int file_fd)
+{
+    /*
+    char buffer[BUF_LEN];
+    while(true) {
+        memset(buffer, 0, BUF_LEN);
+        int bytes_read = read(file_fd, buffer, BUF_LEN - 1);
+        if(bytes_read == 0) {
+            std::string msg("File transfer ends");
+            send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+            std::cout << "file ends was received" << std::endl;
             break;
+        } else if(bytes_read < 0) {
+            std::cerr << "read() error" << std::endl;
+            break;
+        } else { 
+            buffer[bytes_read] = '\0';
+            send(socket_fd, buffer, bytes_read, MSG_NOSIGNAL);
         }
     }
-    if(file_exists) {
-        //send file
-        char resp[] = "Not yet!\n";
-        send(fd, resp, 10, MSG_NOSIGNAL);
-    } else {
-        std::string message = "File \"" + filename + "\" isn't exist\n";
-        send(fd, message.c_str(), message.size() + 1, MSG_NOSIGNAL);
+    */
+    struct stat stat_buf;
+    fstat(file_fd, &stat_buf);
+    off_t offset = 0;
+    sendfile(socket_fd, file_fd, &offset, stat_buf.st_size);
+    std::string msg("File transfer ends");
+    send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+}
+
+
+void try_send_file(std::string &filename, int socket_fd)
+{
+    // filename.erase(filename.size() - 1, 1); // erase \n in the end of filename
+    std::string msg("");
+    int file_fd = 0;
+    if(!is_file_exist(filename)) {
+        msg = "File \"" + filename + "\" isn't exist\n";
+        send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+        return;
     }
+    else if ( (file_fd = open(filename.c_str(), O_RDONLY)) == -1) {
+        msg = "Oops, can't open a file\n";
+        send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+        return;
+    }
+
+    msg = "Starting file transfer " + filename;
+    send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
+    char buffer[BUF_LEN];
+    int read_bytes = recv(socket_fd, buffer, BUF_LEN - 1, 0);
+    if( !strncmp(buffer, "Ready to get file", read_bytes)) {
+        send_file(socket_fd, file_fd); 
+    }
+    close(file_fd);
 }
 
 int main(int argc, char ** argv)
@@ -217,7 +267,7 @@ int main(int argc, char ** argv)
                             
                         case 3: {
                             std::string filename = cut_filename(buffer);
-                            send_file(filename, slave_socket);
+                            try_send_file(filename, slave_socket);
                         } break;
 
                         case 4: {
