@@ -19,10 +19,10 @@
 #include <dirent.h>
 
 #define BUF_LEN 1024
-#define PORT "8080"
-#define FILE_TRANSFER_PORT "8081"
+#define PORT "8888"
+#define FILE_TRANSFER_PORT "8889"
 
-int get_new_connection(const char * port)
+int GetNewConnection(const char * port)
 {
     struct addrinfo hints;
     struct addrinfo *servinfo;
@@ -69,13 +69,13 @@ int get_new_connection(const char * port)
     return master_socket;
 }
 
-void sigchld_handler(int s)
+void SigchldHandler(int signum)
 {
-    while(waitpid(-1, NULL, WNOHANG) > 0)
+    while(waitpid(-1, NULL, WNOHANG) > 0) 
         ;
 }
 
-int what_to_do(const char *buffer)
+int WhatToDo(const char *buffer)
 {
     std::regex re("^download\\ \\w+");
     std::string str(buffer);
@@ -89,7 +89,7 @@ int what_to_do(const char *buffer)
         return 4; 
 }
 
-std::vector<std::string> get_files_in_directory()
+std::vector<std::string> GetFilesInDirectory()
 {
     std::vector<std::string> files;
     DIR *d;
@@ -108,9 +108,9 @@ std::vector<std::string> get_files_in_directory()
     return files;
 }
 
-void send_listing(int fd)
+void SendListing(int fd)
 {
-    std::vector<std::string> files = get_files_in_directory();
+    std::vector<std::string> files = GetFilesInDirectory();
     std::string response("");
     if(!files.empty()) {
         response = "Directory listing: ";
@@ -127,7 +127,7 @@ void send_listing(int fd)
     send(fd, response.c_str(), response.size() + 1, MSG_NOSIGNAL);
 }
 
-std::string cut_filename(char *buffer)
+std::string CutFilename(char *buffer)
 {
     std::vector<std::string> files;
     std::istringstream iss(buffer); // create a stream from string
@@ -139,9 +139,9 @@ std::string cut_filename(char *buffer)
     return files[1];
 }
 
-bool is_file_exist(std::string &filename)
+bool isFileExist(std::string &filename)
 {
-    std::vector<std::string> files = get_files_in_directory();
+    std::vector<std::string> files = GetFilesInDirectory();
     for(auto &file : files) {
         if(file == filename) 
             return true;
@@ -150,10 +150,10 @@ bool is_file_exist(std::string &filename)
 }
 
 
-void send_file(int cmd_socket_fd, int file_fd)
+void SendFile(int cmd_socket_fd, int file_fd)
 {
     std::string msg("");
-    int master_socket = get_new_connection(FILE_TRANSFER_PORT);
+    int master_socket = GetNewConnection(FILE_TRANSFER_PORT);
     int file_socket_fd = 0;
     if(master_socket == -1) {
         msg = "Unable to create connection to receive file, socket() error..\n";
@@ -161,10 +161,10 @@ void send_file(int cmd_socket_fd, int file_fd)
         return;
     } else {
         struct sockaddr_in client_addr;
-        socklen_t sin_size = sizeof(client_addr);
+        socklen_t cli_len= sizeof(client_addr);
         file_socket_fd = accept(master_socket, 
                               (struct sockaddr *) &client_addr,
-                              &sin_size);
+                              &cli_len);
         if(file_socket_fd == -1) {
             std::cerr << "accept() error" << std::endl;
             close(master_socket);
@@ -194,12 +194,11 @@ void send_file(int cmd_socket_fd, int file_fd)
 }
 
 
-void try_send_file(std::string &filename, int socket_fd)
+void TrySendFile(std::string &filename, int socket_fd)
 {
-    // filename.erase(filename.size() - 1, 1); // erase \n in the end of filename
     std::string msg("");
     int file_fd = 0;
-    if(!is_file_exist(filename)) {
+    if( !isFileExist(filename) ) {
         msg = "File \"" + filename + "\" isn't exist\n";
         send(socket_fd, msg.c_str(), msg.size() + 1, MSG_NOSIGNAL);
         return;
@@ -216,7 +215,7 @@ void try_send_file(std::string &filename, int socket_fd)
     memset(buffer, 0, BUF_LEN);
     int read_bytes = recv(socket_fd, buffer, BUF_LEN - 1, 0);
     if( !strncmp(buffer, "Ready to get file", read_bytes)) {
-        send_file(socket_fd, file_fd); 
+        SendFile(socket_fd, file_fd); 
     }
     close(file_fd);
 }
@@ -224,27 +223,30 @@ void try_send_file(std::string &filename, int socket_fd)
 
 int main(int argc, char ** argv)
 {
-    int master_socket = get_new_connection(PORT); 
-
+    int master_socket = GetNewConnection(PORT); 
+    
     struct sigaction sigact;
-    sigact.sa_handler = sigchld_handler;
+    sigact.sa_handler = SigchldHandler;
     sigemptyset(&sigact.sa_mask);
     sigact.sa_flags = SA_RESTART;
     if(sigaction(SIGCHLD, &sigact, NULL) == -1) {
         std::cerr << "sigaction() error" << std::endl;
         return 1;
     }
-
+    
     std::cout << "Server waits for connections..\n";
     int slave_socket = 0;
     struct sockaddr_in client_addr;
-    socklen_t sin_size = sizeof(client_addr);
+    socklen_t cli_len = sizeof(client_addr);
 
     while(true) {
 
         slave_socket = accept(master_socket, 
                               (struct sockaddr *) &client_addr,
-                              &sin_size);
+                              &cli_len);
+        // slow syscalls may return EINTR if it was interrupted by signal
+        if(errno == EINTR) 
+            continue;
         if(slave_socket == -1) {
             std::cerr << "accept() error" << std::endl;
             close(master_socket);
@@ -278,18 +280,18 @@ int main(int argc, char ** argv)
                     break;
                 } else {
                     //buffer[res] = '\0';
-                    int val = what_to_do(buffer);
+                    int val = WhatToDo(buffer);
                     switch (val) {
                         case 1:
                             goto end_loop;
 
                         case 2:
-                            send_listing(slave_socket);
+                            SendListing(slave_socket);
                             break;
                             
                         case 3: {
-                            std::string filename = cut_filename(buffer);
-                            try_send_file(filename, slave_socket);
+                            std::string filename = CutFilename(buffer);
+                            TrySendFile(filename, slave_socket);
                         } break;
 
                         case 4: {

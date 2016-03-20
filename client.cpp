@@ -12,11 +12,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#define PORT "8080"
-#define FILE_TRANSFER_PORT "8081"
+#define PORT "8888"
+#define FILE_TRANSFER_PORT "8889"
 #define BUF_SIZE 1024
 
-int get_new_connection(const char *nodename, const char *port) {
+int GetNewConnection(const char *nodename, const char *port) {
     struct addrinfo hints, *servinfo;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
@@ -25,18 +25,26 @@ int get_new_connection(const char *nodename, const char *port) {
         std::cerr << "getaddrinfo() error" << std::endl;
         return -1;
     }
-    int master_socket = socket(servinfo->ai_family, 
-                               servinfo->ai_socktype,
-                               servinfo->ai_protocol);
-    if(master_socket == -1) {
-        std::cerr << "socket() error" << std::endl;
-        return -1;
-    }
-    
-    sleep(5); //because connect() on client earlier than accept() on server
+    int master_socket = 0;
+    int waiting_count = 20;
+    bool good_conn_flag = false;
+    for(int i = 0; i < waiting_count; ++i) {
+        master_socket = socket(servinfo->ai_family, 
+                                   servinfo->ai_socktype,
+                                   servinfo->ai_protocol);
+        if(master_socket == -1) {
+            std::cerr << "socket() error" << std::endl;
+            return -1;
+        }
 
-    if(connect(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
-        close(master_socket);
+        if(connect(master_socket, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
+            close(master_socket);
+            continue;
+        }
+        good_conn_flag = true;
+        break;
+    }
+    if(!good_conn_flag) {
         std::cerr << "connect() error" << std::endl;
         return -1;
     }
@@ -45,9 +53,9 @@ int get_new_connection(const char *nodename, const char *port) {
     return master_socket;
 }
 
-void receive_file(const char *nodename, int cmd_socket_fd, int file_fd)
+void ReceiveFile(const char *nodename, int cmd_socket_fd, int file_fd)
 {
-    int file_socket_fd = get_new_connection(nodename, FILE_TRANSFER_PORT);
+    int file_socket_fd = GetNewConnection(nodename, FILE_TRANSFER_PORT);
     if(file_socket_fd == -1) {
         char bad_answer[] = "bad";
         send(cmd_socket_fd, bad_answer, strlen(bad_answer), MSG_NOSIGNAL);
@@ -83,7 +91,7 @@ void receive_file(const char *nodename, int cmd_socket_fd, int file_fd)
     }
 }
 
-void try_receive_file(const char *nodename, int socket_fd, std::string &filename)
+void TryReceiveFile(const char *nodename, int socket_fd, std::string &filename)
 {
     int file_fd = 0;
     std::string msg("");
@@ -95,7 +103,7 @@ void try_receive_file(const char *nodename, int socket_fd, std::string &filename
     }
     msg = "Ready to get file";
     send(socket_fd, msg.c_str(), msg.size(), MSG_NOSIGNAL);
-    receive_file(nodename, socket_fd, file_fd);
+    ReceiveFile(nodename, socket_fd, file_fd);
     close(file_fd);
 }
 
@@ -109,7 +117,6 @@ std::string return_filename(char * buffer)
         str.push_back(tmp);
     }
     return str[3];
-
 }
 
 
@@ -121,7 +128,7 @@ int main(int argc, char ** argv)
         return 1;
     }
 
-    int master_socket = get_new_connection(argv[1], PORT);
+    int master_socket = GetNewConnection(argv[1], PORT);
     if(master_socket == -1)
         return -1;
     char buffer[BUF_SIZE];
@@ -150,7 +157,7 @@ int main(int argc, char ** argv)
             std::string new_buffer(buffer);
             if( std::regex_search(new_buffer, re) )  {
                 std::string filename = return_filename(buffer);
-                try_receive_file(argv[1], master_socket, filename);
+                TryReceiveFile(argv[1], master_socket, filename);
             } else {
                 std::cout << buffer;
             }
